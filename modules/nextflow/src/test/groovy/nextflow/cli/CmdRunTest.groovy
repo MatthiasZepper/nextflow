@@ -23,6 +23,8 @@ import nextflow.NextflowMeta
 import nextflow.SysEnv
 import nextflow.config.ConfigMap
 import nextflow.exception.AbortOperationException
+import nextflow.scm.AssetManager
+import nextflow.script.ScriptFile
 import nextflow.util.VersionNumber
 import spock.lang.Specification
 import spock.lang.Unroll
@@ -414,6 +416,115 @@ class CmdRunTest extends Specification {
         0 * cmd.getCurrentVersion()
         0 * cmd.showVersionWarning(_)
         0 * cmd.showVersionError(_)
+    }
+
+    def 'offline allows download for local file scm when project not yet runnable'() {
+        given:
+        def tmp = File.createTempFile('workflow', '.nf')
+        tmp.deleteOnExit()
+        def sf = new ScriptFile(tmp.toPath())
+
+        def manager = Mock(AssetManager)
+        manager.getProjectWithRevision() >> 'local/demo'
+        manager.isLocalScmSource() >> true
+        manager.isRunnable() >> false
+        manager.isUsingLegacyStrategy() >> false
+        manager.download(null, null) >> 'ok'
+        manager.getScriptFile(null) >> sf
+
+        GroovySpy(AssetManager, global: true)
+        new AssetManager('file:///nonexistent/demo.git', _ as HubOptions) >> manager
+
+        def cmd = Spy(new CmdRun(offline: true))
+
+        when:
+        def result = cmd.getScriptFile0('file:///nonexistent/demo.git')
+
+        then:
+        1 * manager.download(null, null)
+        1 * manager.checkout(null)
+        1 * manager.updateModules()
+        0 * manager.checkRemoteStatus(_)
+        result.is(sf)
+    }
+
+    def 'offline blocks download for network scm when project not yet runnable'() {
+        given:
+        def manager = Mock(AssetManager)
+        manager.getProjectWithRevision() >> 'nextflow-io/hello'
+        manager.isLocalScmSource() >> false
+        manager.isRunnable() >> false
+
+        GroovySpy(AssetManager, global: true)
+        new AssetManager('nextflow-io/hello', _ as HubOptions) >> manager
+
+        def cmd = Spy(new CmdRun(offline: true))
+
+        when:
+        cmd.getScriptFile0('nextflow-io/hello')
+
+        then:
+        def e = thrown(AbortOperationException)
+        e.message.contains('automatic download from remote repositories is disabled')
+        0 * manager.download(_, _)
+    }
+
+    def 'offline still runs remote status check for local scm when project already runnable'() {
+        given:
+        def tmp = File.createTempFile('workflow', '.nf')
+        tmp.deleteOnExit()
+        def rev = new AssetManager.RevisionInfo('abc123deadbeef', 'main', AssetManager.RevisionInfo.Type.BRANCH)
+        def sf = new ScriptFile(tmp.toPath())
+        sf.revisionInfo = rev
+
+        def manager = Mock(AssetManager)
+        manager.getProjectWithRevision() >> 'local/demo'
+        manager.isLocalScmSource() >> true
+        manager.isRunnable() >> true
+        manager.isUsingLegacyStrategy() >> false
+        manager.getScriptFile(null) >> sf
+
+        GroovySpy(AssetManager, global: true)
+        new AssetManager('file:///nonexistent/demo.git', _ as HubOptions) >> manager
+
+        def cmd = Spy(new CmdRun(offline: true))
+
+        when:
+        cmd.getScriptFile0('file:///nonexistent/demo.git')
+
+        then:
+        0 * manager.download(_, _)
+        1 * manager.checkout(null)
+        1 * manager.updateModules()
+        1 * manager.checkRemoteStatus(rev)
+    }
+
+    def 'offline skips remote status check for network scm when project already runnable'() {
+        given:
+        def tmp = File.createTempFile('workflow', '.nf')
+        tmp.deleteOnExit()
+        def sf = new ScriptFile(tmp.toPath())
+
+        def manager = Mock(AssetManager)
+        manager.getProjectWithRevision() >> 'nextflow-io/hello'
+        manager.isLocalScmSource() >> false
+        manager.isRunnable() >> true
+        manager.isUsingLegacyStrategy() >> false
+        manager.getScriptFile(null) >> sf
+
+        GroovySpy(AssetManager, global: true)
+        new AssetManager('nextflow-io/hello', _ as HubOptions) >> manager
+
+        def cmd = Spy(new CmdRun(offline: true))
+
+        when:
+        cmd.getScriptFile0('nextflow-io/hello')
+
+        then:
+        0 * manager.download(_, _)
+        1 * manager.checkout(null)
+        1 * manager.updateModules()
+        0 * manager.checkRemoteStatus(_)
     }
 
 }
